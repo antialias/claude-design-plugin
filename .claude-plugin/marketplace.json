@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-design-plugin",
+  "description": "Screen and print design skills for Claude Code, with gpt-image generation paid by your ChatGPT plan through your Codex login.",
+  "owner": {
+    "name": "antialias"
+  },
+  "plugins": [
+    {
+      "name": "design",
+      "source": "./",
+      "description": "Screen UI concepts, print design and image generation through your Codex login.",
+      "category": "design"
+    }
+  ]
+}

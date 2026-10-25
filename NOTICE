@@ -1,0 +1,10 @@
+design: a Claude Code plugin for screen and print design
+Copyright 2026 Thomas Hallock
+
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
+This product includes files from OpenAI's Codex imagegen skill, used under the
+Apache License, Version 2.0 (skills/imagegen/LICENSE.txt), unmodified:
+  skills/imagegen/scripts/image_gen.py
+  skills/imagegen/scripts/remove_chroma_key.py
+  skills/imagegen/references/

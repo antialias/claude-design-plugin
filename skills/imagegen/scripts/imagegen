@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Entry point for the vendored OpenAI image CLI. Supplies its Python dependencies through uv
+# (nothing to install per machine), points it at the backend that pays for the image, and says
+# which model drew it and through which backend, since the vendored script does not.
+# `imagegen remove-chroma-key ...` runs the alpha-extraction helper instead.
+#
+# Backends (IMAGEGEN_BACKEND), never swapped for one another on failure:
+#   codex                   the ChatGPT plan, through this machine's own Codex login: a loopback
+#                           bridge (codex_images.py) serves the Images API from the image tool of
+#                           the backend Codex uses. No OpenAI key, no proxy. Needs `codex login`.
+#   subscription            the ChatGPT plan, through the switch proxy's Images API routes: base
+#                           URL from CLAUDE_SWITCH_PARENT_HTTPS_PROXY (set for every command a
+#                           claude-switch session runs) or IMAGEGEN_PROXY_URL, credential from
+#                           that machine's proxyAuthHelper.
+#   api                     OpenAI's Image API on OPENAI_API_KEY (billed API credits).
+# Unset, it is `subscription` where a switch proxy is configured and `codex` everywhere else. That
+# choice is made from the environment before any call; a failure never moves to another backend.
+#
+# On codex and subscription the ChatGPT image tool draws with its own model (gpt-image-2-codex);
+# --model must name a gpt-image model and is otherwise not forwarded, so that is what is reported.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "imagegen: uv is not installed (brew install uv); refusing to run without it" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = "remove-chroma-key" ]; then
+  shift
+  exec uv run --quiet --no-project --with pillow python3 "$here/remove_chroma_key.py" "$@"
+fi
+
+model="gpt-image-2" # image_gen.py's DEFAULT_MODEL
+dry_run=""
+prev=""
+for arg in "$@"; do
+  case "$arg" in
+    --model=*) model="${arg#--model=}" ;;
+    --dry-run) dry_run=1 ;;
+    *) [ "$prev" = "--model" ] && model="$arg" ;;
+  esac
+  prev="$arg"
+done
+
+backend="${IMAGEGEN_BACKEND:-}"
+if [ -z "$backend" ]; then
+  if [ -n "${IMAGEGEN_PROXY_URL:-}${CLAUDE_SWITCH_PARENT_HTTPS_PROXY:-}" ]; then
+    backend=subscription
+  else
+    backend=codex
+  fi
+fi
+case "$backend" in
+  codex | subscription)
+    case "$model" in
+      gpt-image*) ;;
+      *)
+        echo "imagegen: the $backend backend draws with the ChatGPT image tool; --model must be a gpt-image model, not '$model'" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+tool_model="gpt-image-2-codex (ChatGPT image tool)"
+
+case "$backend" in
+  codex)
+    if [ -n "$dry_run" ]; then
+      echo "imagegen: model $tool_model via Codex login (dry-run only; login not read)" >&2
+      exec uv run --quiet --no-project --with openai --with pillow python3 "$here/image_gen.py" "$@"
+    fi
+    py="$(uv run --quiet --no-project python3 -c 'import sys; print(sys.executable)')"
+    host="$("$py" "$here/codex_images.py" check)"
+    echo "imagegen: model $tool_model via Codex login, hosted by $host" >&2
+    port_file="$(mktemp "${TMPDIR:-/tmp}/imagegen-codex.XXXXXX")"
+    key="$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
+    IMAGEGEN_CODEX_KEY="$key" "$py" "$here/codex_images.py" serve --port-file "$port_file" &
+    bridge=$!
+    # wait reaps the bridge, so bash does not report it as "Terminated" after a successful run.
+    trap 'kill "$bridge" 2>/dev/null || true; wait "$bridge" 2>/dev/null || true; rm -f "$port_file" "$port_file.tmp"' EXIT
+    tries=0
+    while [ ! -s "$port_file" ]; do
+      if ! kill -0 "$bridge" 2>/dev/null || [ "$tries" -ge 200 ]; then
+        echo "imagegen: the Codex bridge did not start listening" >&2
+        exit 1
+      fi
+      tries=$((tries + 1))
+      sleep 0.05
+    done
+    export OPENAI_BASE_URL="http://127.0.0.1:$(cat "$port_file")/v1"
+    # The bridge is on loopback; an HTTP(S)_PROXY in the environment must not carry calls to it.
+    export NO_PROXY="127.0.0.1${NO_PROXY:+,$NO_PROXY}" no_proxy="127.0.0.1${no_proxy:+,$no_proxy}"
+    export OPENAI_API_KEY="$key"
+    rc=0
+    uv run --quiet --no-project --with openai --with pillow python3 "$here/image_gen.py" "$@" || rc=$?
+    exit "$rc"
+    ;;
+  subscription)
+    proxy="${IMAGEGEN_PROXY_URL:-${CLAUDE_SWITCH_PARENT_HTTPS_PROXY:-}}"
+    if [ -z "$proxy" ] && [ -z "$dry_run" ]; then
+      echo "imagegen: no switch proxy here (CLAUDE_SWITCH_PARENT_HTTPS_PROXY is unset: this is not a claude-switch session); set IMAGEGEN_PROXY_URL, or choose IMAGEGEN_BACKEND=codex or api" >&2
+      exit 1
+    fi
+    echo "imagegen: model $tool_model via ChatGPT subscription (switch proxy ${proxy:-none; dry-run only})" >&2
+    if [ -n "$proxy" ]; then
+      export OPENAI_BASE_URL="${proxy%/}/v1"
+    fi
+    if [ -z "$dry_run" ]; then
+      helper="${IMAGEGEN_PROXY_AUTH_HELPER:-}"
+      if [ -z "$helper" ]; then
+        for candidate in /opt/claude-switch/proxy-auth-helper "$HOME/.claude-switch-proxy/proxy-auth-helper"; do
+          if [ -x "$candidate" ]; then
+            helper="$candidate"
+            break
+          fi
+        done
+      fi
+      if [ -z "$helper" ]; then
+        echo "imagegen: no proxyAuthHelper found (/opt/claude-switch/proxy-auth-helper, ~/.claude-switch-proxy/proxy-auth-helper); set IMAGEGEN_PROXY_AUTH_HELPER" >&2
+        exit 1
+      fi
+      if ! login="$("$helper")"; then
+        echo "imagegen: $helper failed; it prints the switch-proxy login this backend needs" >&2
+        exit 1
+      fi
+      case "$login" in
+        "Basic "?*) ;;
+        *)
+          echo "imagegen: $helper did not print a 'Basic …' login" >&2
+          exit 1
+          ;;
+      esac
+      # The SDK sends its api_key as a Bearer; the proxy reads base64(name:secret) from either.
+      export OPENAI_API_KEY="${login#Basic }"
+    fi
+    ;;
+  api)
+    echo "imagegen: model $model via OpenAI API (OPENAI_API_KEY)" >&2
+    ;;
+  *)
+    echo "imagegen: IMAGEGEN_BACKEND must be codex, subscription or api, not '$backend'" >&2
+    exit 1
+    ;;
+esac
+
+exec uv run --quiet --no-project --with openai --with pillow python3 "$here/image_gen.py" "$@"
