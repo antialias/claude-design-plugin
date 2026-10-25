@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/readme/hero.jpg" alt="design: screen and print design for Claude Code" width="100%">
+</p>
+
 # design: a Claude Code plugin for screen and print design
 
 This plugin brings Codex's image-generation design workflow into Claude Code. Claude writes the
@@ -16,6 +20,31 @@ has on your machine. You need no OpenAI API key and no extra service.
 | `design:ui-concept` | Designing or redesigning a screen, page, app or game UI. It generates image concepts first, gets your approval, then implements the accepted concept and compares the build against it in a real browser. |
 | `design:print-design` | Worksheets, forms, handouts, posters and printed PDFs, where page size, type and room for handwriting matter. |
 | `design:imagegen` | Any raster image: mockups, illustrations, product shots, textures, sprites, transparent cutouts, and edits of existing images. The other two skills use it. |
+
+<table>
+  <tr>
+    <td width="50%"><img src="assets/readme/gallery-ui-light.jpg" alt="A landing page concept for Fernleaf, a houseplant watering app"></td>
+    <td width="50%"><img src="assets/readme/gallery-ui-dark.jpg" alt="The same Fernleaf landing page redesigned in dark mode"></td>
+  </tr>
+  <tr>
+    <td>A landing page concept, the first step of <code>ui-concept</code></td>
+    <td>The same concept, asked for in dark mode: an edit keeps the layout and the copy</td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td width="34%"><img src="assets/readme/gallery-print.jpg" alt="A printable fractions worksheet titled Fraction Pizza Party"></td>
+    <td width="66%"><img src="assets/readme/gallery-stickers.jpg" alt="Six matching stickers of a fox doing design work"></td>
+  </tr>
+  <tr>
+    <td>A printable worksheet page</td>
+    <td>A matching sticker set</td>
+  </tr>
+</table>
+
+Every image on this page was drawn by this plugin from a short written brief and paid for by a
+ChatGPT plan. The banner was drawn last, with the four pieces above as its reference images.
 
 Claude picks the skills up from what you ask ("design a landing page for…", "make a printable
 worksheet…", "generate an image of…"). You can also name one, for example `/design:ui-concept`.
