@@ -214,6 +214,120 @@ class SubscriptionBackend(unittest.TestCase):
             self.assertEqual(f.read(), PNG_1X1)
 
 
+class FakeUnavailableProxy(http.server.BaseHTTPRequestHandler):
+    """The switch proxy's image door when the class `images` has no member that can serve
+    (quota-model C3/C4): the class-unavailable reply on the OpenAI wire, exactly as the proxy
+    renders it (renderUnavailable). `answer` is "later" (retryable: 429 rate_limit_exceeded with
+    Retry-After to the codex reset), "unknown" (retryable with no time known, a brain down past
+    stale_max: the same 429 with no Retry-After) or "money" (only money would open it: 429
+    insufficient_quota with x-should-retry: false)."""
+
+    seen = []
+    answer = "later"
+    MESSAGE = "class images is unavailable: gpt is spent until 2026-11-02T00:00:00Z"
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        FakeUnavailableProxy.seen.append(self.path)
+        later = FakeUnavailableProxy.answer in ("later", "unknown")
+        code = "rate_limit_exceeded" if later else "insufficient_quota"
+        err = {"message": self.MESSAGE, "type": "requests" if later else "insufficient_quota", "param": None, "code": code}
+        out = json.dumps({"error": err, "unavailable": {"members": [], "options": []}}).encode()
+        self.send_response(429)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("X-Switch-Quota", "exhausted")
+        self.send_header("X-Switch-Class", "images")
+        if FakeUnavailableProxy.answer == "later":
+            self.send_header("Retry-After", "187200")
+            self.send_header("X-Switch-Available-At", "2026-11-02T00:00:00Z")
+        elif later:
+            self.send_header("X-Switch-Available-At", "unknown")
+        else:
+            self.send_header("X-Switch-Available-At", "unknown")
+            self.send_header("x-should-retry", "false")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *args):
+        pass
+
+
+@unittest.skipUnless(shutil.which("uv"), "needs uv")
+class SubscriptionUnavailable(unittest.TestCase):
+    """What the wrapper does with the proxy's one unavailable reply: it fails with the reply's
+    words and writes nothing, and never waits out a reset hours away. Every call here is answered
+    from the proxy's check, so a retry spends no image."""
+
+    def setUp(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUnavailableProxy)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        FakeUnavailableProxy.seen = []
+        self.dir = tempfile.mkdtemp()
+        self.env = dict(
+            without_proxy(),
+            CLAUDE_SWITCH_PARENT_HTTPS_PROXY=f"http://127.0.0.1:{server.server_address[1]}",
+            IMAGEGEN_PROXY_AUTH_HELPER=helper_script("Basic " + base64.b64encode(b"user:secret").decode()),
+        )
+
+    def generate(self, answer):
+        FakeUnavailableProxy.answer = answer
+        out = os.path.join(self.dir, "x.png")
+        started = time.monotonic()
+        r = run([WRAPPER, "generate", "--prompt", "x", "--out", out, "--no-augment"], env=self.env)
+        return r, time.monotonic() - started, out
+
+    def test_the_money_reply_fails_once(self):
+        r, _, out = self.generate("money")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(FakeUnavailableProxy.MESSAGE, r.stderr)
+        self.assertEqual(len(FakeUnavailableProxy.seen), 1, "x-should-retry: false is obeyed")
+        self.assertFalse(os.path.exists(out))
+
+    def test_the_retryable_reply_fails_in_seconds_with_its_reset(self):
+        """Retry-After is days away: the SDK never sleeps on it, and the reply's message is the
+        error."""
+        r, took, out = self.generate("later")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(FakeUnavailableProxy.MESSAGE, r.stderr)
+        self.assertEqual(len(FakeUnavailableProxy.seen), 1)
+        self.assertLess(took, 60, "a reset days away is never slept on")
+        self.assertFalse(os.path.exists(out))
+
+    def test_the_retryable_reply_with_no_time_fails_after_the_sdks_own_backoff(self):
+        """No time known and no Retry-After: the SDK retries on its own short schedule (each
+        retry answered by the proxy's check, so none spends an image), then fails with the
+        reply's message."""
+        r, took, out = self.generate("unknown")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(FakeUnavailableProxy.MESSAGE, r.stderr)
+        self.assertGreater(len(FakeUnavailableProxy.seen), 1, "a retryable reply is retried")
+        self.assertLessEqual(len(FakeUnavailableProxy.seen), 3)
+        self.assertLess(took, 60)
+        self.assertFalse(os.path.exists(out))
+
+    def test_a_batch_fails_its_jobs_and_ends(self):
+        """The vendored batch loop retries any 429 --max-attempts times (default 3) on a short
+        backoff, the money reply included; it is left verbatim (SKILL.md), and those retries are
+        answered by the proxy's check without a dial. Bounded: three calls, seconds; nine for a
+        reply with no time, which the SDK also retries on its own (three tries an attempt)."""
+        jobs = os.path.join(self.dir, "jobs.jsonl")
+        with open(jobs, "w") as f:
+            f.write(json.dumps({"prompt": "x"}) + "\n")
+        for answer in ("money", "later", "unknown"):
+            with self.subTest(answer):
+                FakeUnavailableProxy.answer, FakeUnavailableProxy.seen = answer, []
+                started = time.monotonic()
+                r = run([WRAPPER, "generate-batch", "--input", jobs, "--out-dir", self.dir, "--no-augment"], env=self.env)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn(FakeUnavailableProxy.MESSAGE, r.stderr)
+                self.assertLessEqual(len(FakeUnavailableProxy.seen), 9 if answer == "unknown" else 3)
+                self.assertLess(time.monotonic() - started, 60)
+                self.assertEqual([p for p in os.listdir(self.dir) if p.endswith(".png")], [])
+
+
 def jwt(exp):
     """An access token shaped like Codex's: only its exp claim is read."""
     enc = lambda obj: base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")  # noqa: E731
