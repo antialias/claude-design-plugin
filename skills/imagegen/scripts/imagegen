@@ -8,16 +8,20 @@
 #   codex                   the ChatGPT plan, through this machine's own Codex login: a loopback
 #                           bridge (codex_images.py) serves the Images API from the image tool of
 #                           the backend Codex uses. No OpenAI key, no proxy. Needs `codex login`.
-#   subscription            the ChatGPT plan, through the switch proxy's Images API routes: base
-#                           URL from CLAUDE_SWITCH_PARENT_HTTPS_PROXY (set for every command a
+#   subscription            a claude-switch proxy's Images API routes, which pick the provider
+#                           for each image (the ChatGPT plan's image tool, or another provider
+#                           when that plan is spent or down): base URL from
+#                           CLAUDE_SWITCH_PARENT_HTTPS_PROXY (set for every command a
 #                           claude-switch session runs) or IMAGEGEN_PROXY_URL, credential from
-#                           that machine's proxyAuthHelper.
+#                           that machine's proxyAuthHelper. served_by.py runs the script and
+#                           reports the provider, model and funding the proxy names per image.
 #   api                     OpenAI's Image API on OPENAI_API_KEY (billed API credits).
 # Unset, it is `subscription` where a switch proxy is configured and `codex` everywhere else. That
 # choice is made from the environment before any call; a failure never moves to another backend.
 #
-# On codex and subscription the ChatGPT image tool draws with its own model (gpt-image-2-codex);
-# --model must name a gpt-image model and is otherwise not forwarded, so that is what is reported.
+# On codex the ChatGPT image tool draws with its own model (gpt-image-2-codex); --model must name a
+# gpt-image model and is otherwise not forwarded, so that is what is reported. On subscription the
+# proxy chooses the model with the provider, and names both for each image once it is drawn.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,7 +61,7 @@ case "$backend" in
     case "$model" in
       gpt-image*) ;;
       *)
-        echo "imagegen: the $backend backend draws with the ChatGPT image tool; --model must be a gpt-image model, not '$model'" >&2
+        echo "imagegen: the $backend backend chooses its own image model; --model must be a gpt-image model, not '$model'" >&2
         exit 1
         ;;
     esac
@@ -103,7 +107,7 @@ case "$backend" in
       echo "imagegen: no switch proxy here (CLAUDE_SWITCH_PARENT_HTTPS_PROXY is unset: this is not a claude-switch session); set IMAGEGEN_PROXY_URL, or choose IMAGEGEN_BACKEND=codex or api" >&2
       exit 1
     fi
-    echo "imagegen: model $tool_model via ChatGPT subscription (switch proxy ${proxy:-none; dry-run only})" >&2
+    echo "imagegen: via switch proxy ${proxy:-none (dry-run only)}; it picks the provider and model for each image" >&2
     if [ -n "$proxy" ]; then
       export OPENAI_BASE_URL="${proxy%/}/v1"
     fi
@@ -135,6 +139,7 @@ case "$backend" in
       # The SDK sends its api_key as a Bearer; the proxy reads base64(name:secret) from either.
       export OPENAI_API_KEY="${login#Basic }"
     fi
+    exec uv run --quiet --no-project --with openai --with pillow python3 "$here/served_by.py" "$@"
     ;;
   api)
     echo "imagegen: model $model via OpenAI API (OPENAI_API_KEY)" >&2

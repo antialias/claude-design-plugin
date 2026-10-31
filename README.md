@@ -124,9 +124,9 @@ uv run --quiet --no-project python3 "$(dirname "$W")/codex_images.py" check
 - The `check` command must print a model name, such as the model Codex is set to use. That model
   only hosts the image tool; the picture itself is drawn by gpt-image-2-codex.
 - If `$W` is empty, the plugin did not install: go back to step 3.
-- If it says `via ChatGPT subscription (switch proxy …)`, the machine has a claude-switch proxy
-  configured. That is a different backend, and the person may want it. Ask them which one they
-  want before going on. To force this one, add `"IMAGEGEN_BACKEND": "codex"` to the `env` object in
+- If it says `via switch proxy …`, the machine has a claude-switch proxy configured. That is a
+  different backend, and the person may want it. Ask them which one they want before going on. To
+  force this one, add `"IMAGEGEN_BACKEND": "codex"` to the `env` object in
   `~/.claude/settings.json`, start a new session, and repeat this step.
 
 **5. Make one real image.** This spends one image from the person's ChatGPT plan limits, so ask
@@ -166,12 +166,14 @@ backends, chosen by `IMAGEGEN_BACKEND`:
 | Backend | Pays with | How |
 |---|---|---|
 | `codex` (default) | your ChatGPT plan | A small loopback bridge, `codex_images.py`, answers the image script's Images API calls by asking the image tool of the backend Codex itself uses. It reads Codex's login file on each call and never writes it. |
-| `subscription` | a ChatGPT plan, through a proxy | For machines running a claude-switch proxy with Images API routes. It is the default where that proxy is configured. |
+| `subscription` | whatever the proxy picks: a ChatGPT plan, or another provider's credits | For machines running a claude-switch proxy with Images API routes. It is the default where that proxy is configured. |
 | `api` | OpenAI API credits | OpenAI's Image API with `OPENAI_API_KEY`. Use it only if you want billed API usage. |
 
-A failure on one backend never moves the call to another. On `codex` and `subscription` the image
-is drawn by the ChatGPT image tool's own model, gpt-image-2-codex, whatever `--model` says, and
-the command reports that model.
+A failure on one backend never moves the call to another. On `codex` the image is drawn by the
+ChatGPT image tool's own model, gpt-image-2-codex, whatever `--model` says, and the command reports
+that model. On `subscription` the proxy picks the provider for each image, falling back on its own
+when the plan is spent or down, and the command reports, per image, the provider and model that
+drew it and whether the plan's allowance or paid credits covered it.
 
 ## Caveats
 

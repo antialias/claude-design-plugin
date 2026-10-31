@@ -39,7 +39,8 @@ the path from that.
   mobile/portrait. `--quality low` only when the user asks for speed or cost.
 - Drafts to `/tmp/imagegen/<project>/`. Copy the accepted concept into the
   repo (its own convention, else `docs/design/`) — it is the spec.
-- Report the model used for every image.
+- Report what drew every image, as imagegen's rules say: the model, and on its
+  `subscription` backend the provider and funding.
 - Redesign: screenshot the current app and pass it as `edit --image <png>`,
   which preserves the real information architecture.
 

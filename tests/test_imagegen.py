@@ -1,7 +1,8 @@
 """The imagegen wrapper: request shape, model and backend reporting, choosing a backend, the
-subscription backend's proxy and login, the codex backend's bridge and Codex login, and refusing to
-run without their prerequisites. Everything here is --dry-run, fails before the API, or talks to a
-local fake of the proxy or of the ChatGPT backend, so no call is spent."""
+subscription backend's proxy and login and what the proxy says drew each image, the codex backend's
+bridge and Codex login, and refusing to run without their prerequisites. Everything here is
+--dry-run, fails before the API, or talks to a local fake of the proxy or of the ChatGPT backend,
+so no call is spent."""
 
 import base64
 import http.server
@@ -87,9 +88,7 @@ class Wrapper(unittest.TestCase):
     def test_a_dry_run_needs_no_proxy(self):
         r = run([WRAPPER, "generate", "--prompt", "x", "--dry-run"], env=dict(without_proxy(), IMAGEGEN_BACKEND="subscription"))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(
-            "model gpt-image-2-codex (ChatGPT image tool) via ChatGPT subscription (switch proxy none; dry-run only)", r.stderr
-        )
+        self.assertIn("imagegen: via switch proxy none (dry-run only); it picks the provider and model for each image", r.stderr)
 
     @unittest.skipUnless(shutil.which("uv"), "needs uv")
     def test_the_backend_follows_the_environment_when_unset(self):
@@ -99,7 +98,7 @@ class Wrapper(unittest.TestCase):
         env = dict(without_proxy(), CLAUDE_SWITCH_PARENT_HTTPS_PROXY="http://127.0.0.1:9")
         r = run([WRAPPER, "generate", "--prompt", "x", "--dry-run"], env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("via ChatGPT subscription (switch proxy http://127.0.0.1:9)", r.stderr)
+        self.assertIn("imagegen: via switch proxy http://127.0.0.1:9;", r.stderr)
 
     def test_the_chatgpt_backends_refuse_a_model_outside_gpt_image(self):
         for backend in ("codex", "subscription"):
@@ -155,17 +154,26 @@ PNG_1X1 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE
 
 
 class FakeProxy(http.server.BaseHTTPRequestHandler):
-    """The switch proxy's Images API route, as far as the SDK can tell: it records what arrived
-    and answers one image."""
+    """The switch proxy's Images API routes, as far as the SDK can tell: it records what arrived
+    and answers the `n` images asked for. `drawn`, given the JSON body ({} for an edit's form),
+    returns the X-Switch-Member and X-Switch-Funding values that name what drew them, or None to
+    answer without either."""
 
     seen = []
+    drawn = None
 
     def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        FakeProxy.seen.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": json.loads(body or b"{}")})
-        out = json.dumps({"created": 1, "data": [{"b64_json": base64.b64encode(PNG_1X1).decode()}]}).encode()
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = json.loads(raw) if self.headers.get("Content-Type", "").startswith("application/json") else {}
+        FakeProxy.seen.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
+        image = {"b64_json": base64.b64encode(PNG_1X1).decode()}
+        out = json.dumps({"created": 1, "data": [image] * body.get("n", 1)}).encode()
+        drawn = FakeProxy.drawn(body) if FakeProxy.drawn else None
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        if drawn:
+            self.send_header("X-Switch-Member", drawn[0])
+            self.send_header("X-Switch-Funding", drawn[1])
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
         self.wfile.write(out)
@@ -187,29 +195,98 @@ class SubscriptionBackend(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stderr)
             self.assertIn(said, r.stderr)
 
-    @unittest.skipUnless(shutil.which("uv"), "needs uv")
-    def test_generates_through_the_proxy_with_the_helpers_login(self):
+
+@unittest.skipUnless(shutil.which("uv"), "needs uv")
+class SubscriptionProxy(unittest.TestCase):
+    """Calls through a fake of the switch proxy, which picks what draws each image and names it."""
+
+    def setUp(self):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeProxy)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        FakeProxy.seen = []
-        login = base64.b64encode(b"user:secret").decode()
-        out = os.path.join(tempfile.mkdtemp(), "x.png")
-        env = dict(
+        FakeProxy.seen, FakeProxy.drawn = [], None
+        self.login = base64.b64encode(b"user:secret").decode()
+        self.dir = tempfile.mkdtemp()
+        self.env = dict(
             without_proxy(),
             CLAUDE_SWITCH_PARENT_HTTPS_PROXY=f"http://127.0.0.1:{server.server_address[1]}",
-            IMAGEGEN_PROXY_AUTH_HELPER=helper_script(f"Basic {login}"),
+            IMAGEGEN_PROXY_AUTH_HELPER=helper_script(f"Basic {self.login}"),
             OPENAI_API_KEY="sk-must-not-be-sent",
         )
-        r = run([WRAPPER, "generate", "--prompt", "a dashboard", "--quality", "low", "--out", out, "--no-augment"], env=env)
+
+    def generate(self, *args):
+        return run([WRAPPER, "generate", "--prompt", "a dashboard", "--quality", "low", "--no-augment", *args], env=self.env)
+
+    def test_generates_through_the_proxy_with_the_helpers_login(self):
+        FakeProxy.drawn = lambda body: ("runway/gpt_image_2", "paid:runway/balance")
+        out = os.path.join(self.dir, "x.png")
+        r = self.generate("--out", out)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("via ChatGPT subscription (switch proxy http://127.0.0.1:", r.stderr)
+        self.assertIn("imagegen: via switch proxy http://127.0.0.1:", r.stderr)
+        self.assertIn(f"imagegen: {out} drawn by runway/gpt_image_2 (paid:runway/balance)\n", r.stderr)
         self.assertEqual(len(FakeProxy.seen), 1)
         seen = FakeProxy.seen[0]
         self.assertEqual(seen["path"], "/v1/images/generations")
-        self.assertEqual(seen["auth"], f"Bearer {login}")
+        self.assertEqual(seen["auth"], f"Bearer {self.login}")
         self.assertEqual((seen["body"]["model"], seen["body"]["quality"]), ("gpt-image-2", "low"))
+        with open(out, "rb") as f:
+            self.assertEqual(f.read(), PNG_1X1)
+
+    def test_each_image_names_what_drew_it_in_order(self):
+        FakeProxy.drawn = lambda body: ("gpt/gpt-image-2,runway/gpt_image_2", "included,paid:runway/balance")
+        r = self.generate("--n", "2", "--out", os.path.join(self.dir, "x.png"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        first, second = (os.path.join(self.dir, f"x-{i}.png") for i in (1, 2))
+        self.assertIn(f"imagegen: {first} drawn by gpt/gpt-image-2 (included)\n", r.stderr)
+        self.assertIn(f"imagegen: {second} drawn by runway/gpt_image_2 (paid:runway/balance)\n", r.stderr)
+
+    def test_an_image_written_before_a_later_one_fails_is_still_named(self):
+        """Both images were drawn (and paid for) before the second's output turned out to exist."""
+        FakeProxy.drawn = lambda body: ("gpt/gpt-image-2,runway/gpt_image_2", "included,paid:runway/balance")
+        first, second = (os.path.join(self.dir, f"x-{i}.png") for i in (1, 2))
+        with open(second, "wb") as f:
+            f.write(b"already here")
+        r = self.generate("--n", "2", "--out", os.path.join(self.dir, "x.png"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Output already exists", r.stderr)
+        self.assertIn(f"imagegen: {first} drawn by gpt/gpt-image-2 (included)\n", r.stderr)
+        self.assertNotIn(f"imagegen: {second} drawn by", r.stderr)
+
+    def test_an_edit_names_what_drew_it(self):
+        FakeProxy.drawn = lambda body: ("runway/gpt_image_2", "paid:runway/balance")
+        src, out = os.path.join(self.dir, "in.png"), os.path.join(self.dir, "out.png")
+        with open(src, "wb") as f:
+            f.write(PNG_1X1)
+        r = run([WRAPPER, "edit", "--image", src, "--prompt", "make it blue", "--out", out, "--no-augment"], env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(FakeProxy.seen[0]["path"], "/v1/images/edits")
+        self.assertIn(f"imagegen: {out} drawn by runway/gpt_image_2 (paid:runway/balance)\n", r.stderr)
+
+    def test_each_batch_job_names_what_drew_its_own_image(self):
+        """Two jobs in flight at once: each image is named with its own job's answer."""
+        FakeProxy.drawn = lambda body: (
+            ("gpt/gpt-image-2", "included") if body["prompt"] == "first" else ("runway/gpt_image_2", "paid:runway/balance")
+        )
+        jobs = os.path.join(self.dir, "jobs.jsonl")
+        with open(jobs, "w") as f:
+            f.write(json.dumps({"prompt": "first", "out": "first.png"}) + "\n")
+            f.write(json.dumps({"prompt": "second", "out": "second.png"}) + "\n")
+        r = run(
+            [WRAPPER, "generate-batch", "--input", jobs, "--out-dir", self.dir, "--concurrency", "2", "--no-augment"],
+            env=self.env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(FakeProxy.seen), 2)
+        first, second = (os.path.join(self.dir, name) for name in ("first.png", "second.png"))
+        self.assertIn(f"imagegen: {first} drawn by gpt/gpt-image-2 (included)\n", r.stderr)
+        self.assertIn(f"imagegen: {second} drawn by runway/gpt_image_2 (paid:runway/balance)\n", r.stderr)
+
+    def test_an_answer_without_the_headers_names_nothing(self):
+        out = os.path.join(self.dir, "x.png")
+        r = self.generate("--out", out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("drawn by", r.stderr)
         with open(out, "rb") as f:
             self.assertEqual(f.read(), PNG_1X1)
 

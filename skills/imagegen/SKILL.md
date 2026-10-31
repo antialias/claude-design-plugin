@@ -14,8 +14,9 @@ OpenAI Images API and writes files to disk:
 ```
 
 `<base>` is the "Base directory for this skill" shown when this skill loads. The wrapper
-supplies `openai` and `pillow` through `uv` and prints `imagegen: model <id> via <backend>`
-before calling the API.
+supplies `openai` and `pillow` through `uv` and, before calling the API, prints the backend it
+calls: `imagegen: model <id> via <backend>`, or on `subscription`
+`imagegen: via switch proxy <url>`.
 
 Backend (`IMAGEGEN_BACKEND`). Unset, it is `subscription` where a switch proxy is configured and
 `codex` everywhere else; a failure never moves to another backend:
@@ -25,22 +26,29 @@ Backend (`IMAGEGEN_BACKEND`). Unset, it is `subscription` where a switch proxy i
   image tool of the backend Codex itself uses. No OpenAI key and no proxy. It draws on the same
   usage limits as Codex, and it never refreshes Codex's login: an expired one is reported with
   what to do. The backend is not a documented OpenAI API and can change without notice.
-- `subscription`: the ChatGPT plan, through a claude-switch proxy's Images API routes. The proxy
-  address is `CLAUDE_SWITCH_PARENT_HTTPS_PROXY` (or `IMAGEGEN_PROXY_URL`) and the login comes from
-  the machine's `proxyAuthHelper`.
+- `subscription`: a claude-switch proxy's Images API routes. The proxy picks the provider for each
+  image (the ChatGPT plan's image tool, or another provider when that plan is spent or down), and
+  once an image is written the wrapper prints the pick:
+  `imagegen: <path> drawn by <provider/model> (<funding>)`. Funding is `included` (the plan's own
+  allowance) or `paid:<pot>` (charged to that pot's credits or balance; `paid?:` when its balance
+  is unknown). The proxy address is `CLAUDE_SWITCH_PARENT_HTTPS_PROXY` (or `IMAGEGEN_PROXY_URL`)
+  and the login comes from the machine's `proxyAuthHelper`.
 - `api`: OpenAI's Image API on `OPENAI_API_KEY` (billed API credits). Only when the user asks.
 
-On `codex` and `subscription` the ChatGPT image tool draws with its own model, gpt-image-2-codex.
-`--model` must still name a gpt-image model, but it is not forwarded, and the wrapper reports the
-model that actually drew. Native transparency works there: `--background transparent` is honoured.
-The vendored script only lets it through with `--model gpt-image-1.5`, which on these backends
-changes nothing else.
+On `codex` the ChatGPT image tool draws with its own model, gpt-image-2-codex; on `subscription`
+the proxy picks the model along with the provider. On both, `--model` must still name a gpt-image
+model but is not forwarded, and the wrapper reports what actually drew. `--background transparent`
+is honoured on `codex` and passed to whichever provider draws on `subscription`. The vendored
+script only lets it through with `--model gpt-image-1.5`, which on these backends changes nothing
+else.
 
 ## Rules
 
-- Pass `--model` explicitly and report the model the wrapper's `imagegen: model …` line names
-  with every image. Default `gpt-image-2`. On `api`, never switch models (for example to
-  `gpt-image-1.5` for native transparency) without asking.
+- Pass `--model` explicitly, default `gpt-image-2`. With every image, report what drew it: on
+  `subscription` the provider/model and funding of its `imagegen: <path> drawn by …` line (no such
+  line means the proxy did not say; report that), elsewhere the model the `imagegen: model …` line
+  names. On `api`, never switch models (for example to `gpt-image-1.5` for native transparency)
+  without asking.
 - If the backend is unavailable (no Codex login or an expired one, no switch proxy, usage limit
   reached, no key for `api`), `uv` is missing, or the call fails: stop and report the error line.
   Do not switch backends, and do not substitute an SVG/HTML placeholder or a different provider,
@@ -68,7 +76,7 @@ Show the user: `open <png>` on macOS, and send it with SendUserFile when that to
 - Previews and drafts: `/tmp/imagegen/<project>/`.
 - Assets the project uses: copy the chosen file into the workspace (repo convention, else next
   to the consuming code) and update references. Never leave a project asset only in `/tmp`.
-- Report final paths, the final prompt, and the model.
+- Report final paths, the final prompt, and what drew each image (see Rules).
 
 ## Generate or edit
 
@@ -80,8 +88,8 @@ Show the user: `open <png>` on macOS, and send it with SendUserFile when that to
   Generate on a flat chroma-key background, then
   `"<base>/scripts/imagegen" remove-chroma-key --input in.png --out out.png --auto-key border`.
   If that is not good enough: on `codex` or `subscription`, regenerate with
-  `--model gpt-image-1.5 --background transparent --output-format png` (the same image model draws
-  it); on `api`, ask before switching to `gpt-image-1.5`.
+  `--model gpt-image-1.5 --background transparent --output-format png` (`--model` is not forwarded
+  there); on `api`, ask before switching to `gpt-image-1.5`.
 
 ## Prompt shape
 
