@@ -17,6 +17,9 @@ image_gen.py unmodified, hands it clients that make the same calls through the S
 
 A response without the headers prints no such line.
 
+IMAGEGEN_CLASS, when the wrapper sets it (from --class or the environment), names the image class
+the proxy draws from; every call carries it as the request header X-Switch-Class.
+
     served_by.py <image_gen.py arguments>
 """
 
@@ -81,8 +84,13 @@ def main() -> int:
                 member, funding = drawn[i]
                 print(f"imagegen: {path} drawn by {member}" + (f" ({funding})" if funding else ""), file=sys.stderr)
 
-    image_gen._create_client = lambda: types.SimpleNamespace(images=Images(create().images))
-    image_gen._create_async_client = lambda: types.SimpleNamespace(images=AsyncImages(create_async().images))
+    image_class = os.environ.get("IMAGEGEN_CLASS", "")
+
+    def with_class(client):
+        return client.with_options(default_headers={"X-Switch-Class": image_class}) if image_class else client
+
+    image_gen._create_client = lambda: types.SimpleNamespace(images=Images(with_class(create()).images))
+    image_gen._create_async_client = lambda: types.SimpleNamespace(images=AsyncImages(with_class(create_async()).images))
     image_gen._decode_write_and_downscale = write_and_say
     sys.argv = [IMAGE_GEN, *sys.argv[1:]]
     return image_gen.main()

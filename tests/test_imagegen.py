@@ -118,6 +118,56 @@ class Wrapper(unittest.TestCase):
         self.assertIn("via OpenAI API (OPENAI_API_KEY)", r.stderr)
         self.assertIn("OPENAI_API_KEY is not set", r.stderr)
 
+    def test_a_class_outside_the_switch_proxy_is_an_error(self):
+        for backend in ("codex", "api"):
+            for args, env in (
+                (["--class", "images-runway"], {}),
+                (["--class=images-runway"], {}),
+                ([], {"IMAGEGEN_CLASS": "images-runway"}),
+            ):
+                with self.subTest(backend=backend, args=args, env=env):
+                    r = run(
+                        [WRAPPER, "generate", "--prompt", "x", "--dry-run", *args],
+                        env=dict(without_proxy(), IMAGEGEN_BACKEND=backend, **env),
+                    )
+                    self.assertEqual(r.returncode, 1, r.stderr)
+                    self.assertIn("image classes exist only under the switch proxy", r.stderr)
+                    self.assertIn(f"this backend is {backend}:", r.stderr)
+
+    def test_a_class_flag_needs_a_name(self):
+        for args in (["--class"], ["--class="], ["--class", "a b"]):
+            with self.subTest(args=args):
+                r = run(
+                    [WRAPPER, "generate", "--prompt", "x", "--dry-run", *args],
+                    env=dict(without_proxy(), IMAGEGEN_BACKEND="subscription"),
+                )
+                self.assertEqual(r.returncode, 1, r.stderr)
+
+    @unittest.skipUnless(shutil.which("uv"), "needs uv")
+    def test_the_class_flag_never_reaches_the_vendored_script(self):
+        """image_gen.py rejects flags it does not know; the wrapper takes --class out wherever it is."""
+        for args in (
+            ["--class", "images-runway", "generate", "--prompt", "x", "--dry-run", "--no-augment"],
+            ["generate", "--class", "images-runway", "--prompt", "x", "--dry-run", "--no-augment"],
+            ["generate", "--prompt", "x", "--dry-run", "--no-augment", "--class=images-runway"],
+        ):
+            with self.subTest(args=args):
+                r = run([WRAPPER, *args], env=dict(without_proxy(), IMAGEGEN_BACKEND="subscription"))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("imagegen: via switch proxy none (dry-run only), class images-runway;", r.stderr)
+                self.assertEqual(payload(r.stdout)["prompt"], "x")
+
+    @unittest.skipUnless(shutil.which("uv"), "needs uv")
+    def test_models_outside_the_switch_proxy_names_the_one_provider(self):
+        for backend, said in (("codex", "Codex login"), ("api", "OPENAI_API_KEY")):
+            with self.subTest(backend=backend):
+                r = run([WRAPPER, "models"], env=dict(without_proxy(), IMAGEGEN_BACKEND=backend))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"backend {backend}:", r.stdout)
+                self.assertIn(said, r.stdout)
+                self.assertIn("It has one provider", r.stdout)
+                self.assertIn("exist only under the switch proxy", r.stdout)
+
     def test_refuses_an_unknown_backend(self):
         env = dict(os.environ, IMAGEGEN_BACKEND="dalle")
         r = run([WRAPPER, "generate", "--prompt", "x"], env=env)
@@ -134,6 +184,7 @@ def without_proxy():
             "CLAUDE_SWITCH_PARENT_HTTPS_PROXY",
             "IMAGEGEN_PROXY_URL",
             "IMAGEGEN_BACKEND",
+            "IMAGEGEN_CLASS",
             "CODEX_HOME",
             "IMAGEGEN_CODEX_MODEL",
         )
@@ -161,11 +212,32 @@ class FakeProxy(http.server.BaseHTTPRequestHandler):
 
     seen = []
     drawn = None
+    # What GET /v1/models answers: (status, JSON body).
+    models = (200, {"object": "list", "data": []})
+
+    def do_GET(self):
+        FakeProxy.seen.append(
+            {"path": self.path, "auth": self.headers.get("Authorization"), "class": self.headers.get("X-Switch-Class")}
+        )
+        status, body = FakeProxy.models if self.path == "/v1/models" else (404, {"error": {"message": "no such route"}})
+        out = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         body = json.loads(raw) if self.headers.get("Content-Type", "").startswith("application/json") else {}
-        FakeProxy.seen.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
+        FakeProxy.seen.append(
+            {
+                "path": self.path,
+                "auth": self.headers.get("Authorization"),
+                "class": self.headers.get("X-Switch-Class"),
+                "body": body,
+            }
+        )
         image = {"b64_json": base64.b64encode(PNG_1X1).decode()}
         out = json.dumps({"created": 1, "data": [image] * body.get("n", 1)}).encode()
         drawn = FakeProxy.drawn(body) if FakeProxy.drawn else None
@@ -205,7 +277,7 @@ class SubscriptionProxy(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        FakeProxy.seen, FakeProxy.drawn = [], None
+        FakeProxy.seen, FakeProxy.drawn, FakeProxy.models = [], None, (200, {"object": "list", "data": []})
         self.login = base64.b64encode(b"user:secret").decode()
         self.dir = tempfile.mkdtemp()
         self.env = dict(
@@ -281,6 +353,130 @@ class SubscriptionProxy(unittest.TestCase):
         first, second = (os.path.join(self.dir, name) for name in ("first.png", "second.png"))
         self.assertIn(f"imagegen: {first} drawn by gpt/gpt-image-2 (included)\n", r.stderr)
         self.assertIn(f"imagegen: {second} drawn by runway/gpt_image_2 (paid:runway/balance)\n", r.stderr)
+
+    def test_no_class_sends_no_class_header(self):
+        r = self.generate("--out", os.path.join(self.dir, "x.png"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIsNone(FakeProxy.seen[0]["class"])
+
+    def test_the_class_flag_reaches_the_proxy_as_its_header(self):
+        r = self.generate("--class", "images-runway", "--out", os.path.join(self.dir, "x.png"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(", class images-runway;", r.stderr)
+        self.assertEqual(FakeProxy.seen[0]["class"], "images-runway")
+        self.assertNotIn("class", FakeProxy.seen[0]["body"])
+
+    def test_the_class_from_the_environment_reaches_the_proxy_and_the_flag_wins(self):
+        self.env["IMAGEGEN_CLASS"] = "images-chatgpt"
+        r = self.generate("--out", os.path.join(self.dir, "x.png"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(FakeProxy.seen[0]["class"], "images-chatgpt")
+        r = self.generate("--class=images-runway", "--out", os.path.join(self.dir, "y.png"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(FakeProxy.seen[1]["class"], "images-runway")
+
+    def test_an_edit_and_a_batch_carry_the_class(self):
+        src = os.path.join(self.dir, "in.png")
+        with open(src, "wb") as f:
+            f.write(PNG_1X1)
+        r = run(
+            [
+                WRAPPER,
+                "edit",
+                "--image",
+                src,
+                "--prompt",
+                "x",
+                "--out",
+                os.path.join(self.dir, "e.png"),
+                "--no-augment",
+                "--class",
+                "images-runway",
+            ],
+            env=self.env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        jobs = os.path.join(self.dir, "jobs.jsonl")
+        with open(jobs, "w") as f:
+            f.write(json.dumps({"prompt": "first", "out": "first.png"}) + "\n")
+        r = run(
+            [WRAPPER, "generate-batch", "--input", jobs, "--out-dir", self.dir, "--no-augment", "--class", "images-runway"],
+            env=self.env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            [(s["path"], s["class"]) for s in FakeProxy.seen],
+            [("/v1/images/edits", "images-runway"), ("/v1/images/generations", "images-runway")],
+        )
+
+    MODELS = {
+        "object": "list",
+        "data": [
+            {
+                "id": "images",
+                "object": "model",
+                "default": True,
+                "summary": "runway/gpt_image_2 can draw now, paid from runway/balance",
+                "accepts": {"summary": "sizes both members draw; no mask", "sizes": ["1024x1024"]},
+                "members": [
+                    {
+                        "id": "gpt/gpt-image-2",
+                        "check": "no",
+                        "summary": "blocked: the ChatGPT plan does not include images",
+                        "accepts": {"summary": "any size to 3:1, mask, png/jpeg/webp"},
+                    },
+                    {
+                        "id": "runway/gpt_image_2",
+                        "check": "paid",
+                        "summary": "paid from runway/balance ($4.20)",
+                        "accepts": {"summary": "its own sizes, png only, no mask"},
+                        "extra": "ignored",
+                    },
+                ],
+            },
+            # A row missing its default, summary and accepts, and a member missing its check and
+            # accepts: printed without them.
+            {"id": "images-runway", "members": [{"id": "runway/gpt_image_2", "summary": "paid from runway/balance"}]},
+            {"id": "images-chatgpt", "default": False, "summary": "nobody can draw now"},
+        ],
+    }
+
+    def test_models_lists_each_class_with_its_members(self):
+        FakeProxy.models = (200, self.MODELS)
+        r = run([WRAPPER, "models"], env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            r.stdout,
+            "images (default): runway/gpt_image_2 can draw now, paid from runway/balance\n"
+            "  accepts: sizes both members draw; no mask\n"
+            "  - gpt/gpt-image-2 [no]: blocked: the ChatGPT plan does not include images\n"
+            "    accepts: any size to 3:1, mask, png/jpeg/webp\n"
+            "  - runway/gpt_image_2 [paid]: paid from runway/balance ($4.20)\n"
+            "    accepts: its own sizes, png only, no mask\n"
+            "\n"
+            "images-runway\n"
+            "  - runway/gpt_image_2: paid from runway/balance\n"
+            "\n"
+            "images-chatgpt: nobody can draw now\n",
+        )
+        self.assertEqual(FakeProxy.seen, [{"path": "/v1/models", "auth": f"Bearer {self.login}", "class": None}])
+
+    def test_models_for_one_class(self):
+        FakeProxy.models = (200, self.MODELS)
+        r = run([WRAPPER, "models", "--class", "images-chatgpt"], env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "images-chatgpt: nobody can draw now\n")
+        r = run([WRAPPER, "models", "--class", "images-nope"], env=self.env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("the proxy lists no class images-nope", r.stderr)
+
+    def test_models_reports_a_refusal_in_the_proxys_words(self):
+        for status, said in ((401, "answered 401: bad login"), (404, "this proxy has no image model list")):
+            with self.subTest(status=status):
+                FakeProxy.models = (status, {"error": {"message": "bad login"}})
+                r = run([WRAPPER, "models"], env=self.env)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(said, r.stderr)
 
     def test_an_answer_without_the_headers_names_nothing(self):
         out = os.path.join(self.dir, "x.png")

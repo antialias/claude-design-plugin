@@ -175,6 +175,13 @@ that model. On `subscription` the proxy picks the provider for each image, falli
 when the plan is spent or down, and the command reports, per image, the provider and model that
 drew it and whether the plan's allowance or paid credits covered it.
 
+On `subscription` each picture comes from an image class, a list of providers the proxy tries in
+order: `images` (the default: the ChatGPT plan, then Runway, paid from Runway credits),
+`images-runway` or `images-chatgpt`. `--class <name>` or `IMAGEGEN_CLASS` picks one, and
+`imagegen models` lists the classes, which providers can draw now and what each accepts. When the
+proxy refuses a picture, its reply names every provider in the class and why; a request one change
+away from drawing gets a 400 naming that change.
+
 ## Caveats
 
 - **This uses an undocumented backend.** The `codex` backend calls the same ChatGPT endpoint the

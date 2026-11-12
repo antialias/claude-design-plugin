@@ -22,6 +22,12 @@
 # On codex the ChatGPT image tool draws with its own model (gpt-image-2-codex); --model must name a
 # gpt-image model and is otherwise not forwarded, so that is what is reported. On subscription the
 # proxy chooses the model with the provider, and names both for each image once it is drawn.
+#
+# Image classes (subscription only): the proxy draws each picture from a class, a list of providers
+# it walks in order. `--class <name>` (anywhere in the arguments) or IMAGEGEN_CLASS picks one, sent
+# as X-Switch-Class; unset, the proxy uses its default class, `images`. The flag is taken out before
+# image_gen.py, which rejects flags it does not know. `imagegen models` prints the proxy's classes,
+# their members, who can draw now and what each accepts (models.py, from the proxy's /v1/models).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +41,44 @@ if [ "${1:-}" = "remove-chroma-key" ]; then
   shift
   exec uv run --quiet --no-project --with pillow python3 "$here/remove_chroma_key.py" "$@"
 fi
+
+# --class is the wrapper's own: take it out before anything else reads the arguments.
+class="${IMAGEGEN_CLASS:-}"
+class_from="IMAGEGEN_CLASS"
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --class)
+      if [ $# -lt 2 ]; then
+        echo "imagegen: --class needs a class name, such as images, images-runway or images-chatgpt" >&2
+        exit 1
+      fi
+      class="$2"
+      class_from="--class"
+      shift 2
+      ;;
+    --class=*)
+      class="${1#--class=}"
+      class_from="--class"
+      shift
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+if [ "$class_from" = "--class" ] && [ -z "$class" ]; then
+  echo "imagegen: --class needs a class name, such as images, images-runway or images-chatgpt" >&2
+  exit 1
+fi
+case "$class" in
+  *[!A-Za-z0-9._-]*)
+    echo "imagegen: '$class' is not a class name (letters, digits, '.', '_' and '-' only)" >&2
+    exit 1
+    ;;
+esac
 
 model="gpt-image-2" # image_gen.py's DEFAULT_MODEL
 dry_run=""
@@ -56,6 +100,70 @@ if [ -z "$backend" ]; then
     backend=codex
   fi
 fi
+case "$backend" in
+  codex) backend_says="codex: the ChatGPT plan through this machine's Codex login, drawn by gpt-image-2-codex" ;;
+  subscription) backend_says="subscription: a claude-switch proxy" ;;
+  api) backend_says="api: OpenAI's Image API on OPENAI_API_KEY (billed API credits)" ;;
+  *)
+    echo "imagegen: IMAGEGEN_BACKEND must be codex, subscription or api, not '$backend'" >&2
+    exit 1
+    ;;
+esac
+if [ -n "$class" ] && [ "$backend" != subscription ]; then
+  echo "imagegen: $class_from $class: image classes exist only under the switch proxy (IMAGEGEN_BACKEND=subscription); this backend is $backend_says, which has one provider" >&2
+  exit 1
+fi
+
+# The proxy's login, from the machine's proxyAuthHelper, as the base64(name:secret) the SDK sends
+# as its api_key. Sets proxy_login.
+read_proxy_login() {
+  local helper="${IMAGEGEN_PROXY_AUTH_HELPER:-}" candidate login
+  if [ -z "$helper" ]; then
+    for candidate in /opt/claude-switch/proxy-auth-helper "$HOME/.claude-switch-proxy/proxy-auth-helper"; do
+      if [ -x "$candidate" ]; then
+        helper="$candidate"
+        break
+      fi
+    done
+  fi
+  if [ -z "$helper" ]; then
+    echo "imagegen: no proxyAuthHelper found (/opt/claude-switch/proxy-auth-helper, ~/.claude-switch-proxy/proxy-auth-helper); set IMAGEGEN_PROXY_AUTH_HELPER" >&2
+    exit 1
+  fi
+  if ! login="$("$helper")"; then
+    echo "imagegen: $helper failed; it prints the switch-proxy login this backend needs" >&2
+    exit 1
+  fi
+  case "$login" in
+    "Basic "?*) ;;
+    *)
+      echo "imagegen: $helper did not print a 'Basic …' login" >&2
+      exit 1
+      ;;
+  esac
+  # The SDK sends its api_key as a Bearer; the proxy reads base64(name:secret) from either.
+  proxy_login="${login#Basic }"
+}
+
+no_proxy_here="no switch proxy here (CLAUDE_SWITCH_PARENT_HTTPS_PROXY is unset: this is not a claude-switch session); set IMAGEGEN_PROXY_URL, or choose IMAGEGEN_BACKEND=codex or api"
+
+if [ "${1:-}" = "models" ]; then
+  shift
+  if [ "$backend" != subscription ]; then
+    echo "backend $backend_says."
+    echo "It has one provider, so there are no image classes to choose; they exist only under the switch proxy (IMAGEGEN_BACKEND=subscription)."
+    exit 0
+  fi
+  proxy="${IMAGEGEN_PROXY_URL:-${CLAUDE_SWITCH_PARENT_HTTPS_PROXY:-}}"
+  if [ -z "$proxy" ]; then
+    echo "imagegen: $no_proxy_here" >&2
+    exit 1
+  fi
+  read_proxy_login
+  IMAGEGEN_PROXY_LOGIN="$proxy_login" IMAGEGEN_CLASS="$class" \
+    exec uv run --quiet --no-project python3 "$here/models.py" "${proxy%/}/v1" "$@"
+fi
+
 case "$backend" in
   codex | subscription)
     case "$model" in
@@ -104,49 +212,26 @@ case "$backend" in
   subscription)
     proxy="${IMAGEGEN_PROXY_URL:-${CLAUDE_SWITCH_PARENT_HTTPS_PROXY:-}}"
     if [ -z "$proxy" ] && [ -z "$dry_run" ]; then
-      echo "imagegen: no switch proxy here (CLAUDE_SWITCH_PARENT_HTTPS_PROXY is unset: this is not a claude-switch session); set IMAGEGEN_PROXY_URL, or choose IMAGEGEN_BACKEND=codex or api" >&2
+      echo "imagegen: $no_proxy_here" >&2
       exit 1
     fi
-    echo "imagegen: via switch proxy ${proxy:-none (dry-run only)}; it picks the provider and model for each image" >&2
+    if [ -n "$class" ]; then
+      echo "imagegen: via switch proxy ${proxy:-none (dry-run only)}, class $class; it picks the provider and model for each image from that class" >&2
+    else
+      echo "imagegen: via switch proxy ${proxy:-none (dry-run only)}; it picks the provider and model for each image" >&2
+    fi
     if [ -n "$proxy" ]; then
       export OPENAI_BASE_URL="${proxy%/}/v1"
     fi
     if [ -z "$dry_run" ]; then
-      helper="${IMAGEGEN_PROXY_AUTH_HELPER:-}"
-      if [ -z "$helper" ]; then
-        for candidate in /opt/claude-switch/proxy-auth-helper "$HOME/.claude-switch-proxy/proxy-auth-helper"; do
-          if [ -x "$candidate" ]; then
-            helper="$candidate"
-            break
-          fi
-        done
-      fi
-      if [ -z "$helper" ]; then
-        echo "imagegen: no proxyAuthHelper found (/opt/claude-switch/proxy-auth-helper, ~/.claude-switch-proxy/proxy-auth-helper); set IMAGEGEN_PROXY_AUTH_HELPER" >&2
-        exit 1
-      fi
-      if ! login="$("$helper")"; then
-        echo "imagegen: $helper failed; it prints the switch-proxy login this backend needs" >&2
-        exit 1
-      fi
-      case "$login" in
-        "Basic "?*) ;;
-        *)
-          echo "imagegen: $helper did not print a 'Basic …' login" >&2
-          exit 1
-          ;;
-      esac
-      # The SDK sends its api_key as a Bearer; the proxy reads base64(name:secret) from either.
-      export OPENAI_API_KEY="${login#Basic }"
+      read_proxy_login
+      export OPENAI_API_KEY="$proxy_login"
     fi
+    export IMAGEGEN_CLASS="$class"
     exec uv run --quiet --no-project --with openai --with pillow python3 "$here/served_by.py" "$@"
     ;;
   api)
     echo "imagegen: model $model via OpenAI API (OPENAI_API_KEY)" >&2
-    ;;
-  *)
-    echo "imagegen: IMAGEGEN_BACKEND must be codex, subscription or api, not '$backend'" >&2
-    exit 1
     ;;
 esac
 

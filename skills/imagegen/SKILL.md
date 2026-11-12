@@ -32,7 +32,8 @@ Backend (`IMAGEGEN_BACKEND`). Unset, it is `subscription` where a switch proxy i
   `imagegen: <path> drawn by <provider/model> (<funding>)`. Funding is `included` (the plan's own
   allowance) or `paid:<pot>` (charged to that pot's credits or balance; `paid?:` when its balance
   is unknown). The proxy address is `CLAUDE_SWITCH_PARENT_HTTPS_PROXY` (or `IMAGEGEN_PROXY_URL`)
-  and the login comes from the machine's `proxyAuthHelper`.
+  and the login comes from the machine's `proxyAuthHelper`. Each picture comes from an image class
+  (below).
 - `api`: OpenAI's Image API on `OPENAI_API_KEY` (billed API credits). Only when the user asks.
 
 On `codex` the ChatGPT image tool draws with its own model, gpt-image-2-codex; on `subscription`
@@ -42,6 +43,34 @@ is honoured on `codex` and passed to whichever provider draws on `subscription`.
 script only lets it through with `--model gpt-image-1.5`, which on these backends changes nothing
 else.
 
+## Image classes (switch proxy)
+
+On `subscription` a picture comes from an image class: a list of providers (members) the proxy
+tries in order. Pick one with `--class <name>` or `IMAGEGEN_CLASS`; unset, it is `images`.
+
+- `images` (the default): the ChatGPT plan first, then Runway, paid from Runway credits.
+- `images-runway`: Runway only.
+- `images-chatgpt`: the ChatGPT plan only.
+
+`"<base>/scripts/imagegen" models` lists each class, its members, which of them can draw now
+(`included` on a plan's allowance, `paid` from credits, or `no` and why) and what each accepts.
+Run it before an unusual size, a mask or big reference images, and pick a class whose members can
+draw that. Classes exist only under the switch proxy; on `codex` or `api`, `--class` is an error.
+
+Sizes every member draws:
+
+<!-- sizes:begin -->
+- auto
+- 1024x1024
+- 1536x1024
+- 1024x1536
+- 2048x1152
+- 1152x2048
+<!-- sizes:end -->
+
+Any other size may narrow who can draw. The 3:1 limit on a picture's shape is gpt's alone; Runway
+draws only shapes near its own, which `imagegen models` lists.
+
 ## Rules
 
 - Pass `--model` explicitly, default `gpt-image-2`. With every image, report what drew it: on
@@ -49,10 +78,20 @@ else.
   line means the proxy did not say; report that), elsewhere the model the `imagegen: model …` line
   names. On `api`, never switch models (for example to `gpt-image-1.5` for native transparency)
   without asking.
-- If the backend is unavailable (no Codex login or an expired one, no switch proxy, usage limit
-  reached, no key for `api`), `uv` is missing, or the call fails: stop and report the error line.
-  Do not switch backends, and do not substitute an SVG/HTML placeholder or a different provider,
-  without asking.
+- If the backend is unavailable (no Codex login or an expired one, the plan's usage limit on
+  `codex`, no switch proxy, no key for `api`) or `uv` is missing: stop and report the error line.
+- When the switch proxy refuses a picture:
+  - A 400 names the field (`param`) and the values that would draw, such as the nearest sizes:
+    change that one thing and run again.
+  - Otherwise (a 429), report the reply's own words. They name every member of the class and why
+    it can't draw: blocked or out of money (`insufficient_quota`), or free again later (a
+    `Retry-After`). `imagegen models` shows the same, per class.
+  - Never conclude "the subscription lapsed", or that images are unavailable, while the reply or
+    `imagegen models` lists another member that can draw. Use it: retry in the class whose member
+    can draw (`--class images-runway`, for one), or ask the user.
+- Do not switch backends, and do not substitute an SVG/HTML placeholder, without asking. Switching
+  to the billed API (`IMAGEGEN_BACKEND=api`) needs the owner's word each time, whatever the
+  proxy said.
 - Never edit `scripts/image_gen.py` or `scripts/remove_chroma_key.py`; they are vendored
   verbatim from OpenAI's Codex imagegen skill (Apache-2.0, `LICENSE.txt`). Missing capability →
   ask the user.
@@ -121,5 +160,7 @@ and run `"<base>/scripts/imagegen"` wherever they say `python "$IMAGE_GEN"` or a
 - `references/cli.md` — every subcommand and flag, batch JSONL format, downscaling.
 - `references/image-api.md` — API parameters, sizes, quality, model constraints.
 
-`gpt-image-2` sizes: `auto` or `WxH` with both edges multiples of 16, max edge 3840, ratio ≤ 3:1,
-0.65–8.3 MP. Common: `1024x1024`, `1536x1024`, `1024x1536`, `2048x1152`, `3840x2160`.
+`gpt-image-2` sizes (on `codex` and `api`, and gpt's own rule on the switch proxy): `auto` or `WxH`
+with both edges multiples of 16 and at most 3840, ratio ≤ 3:1, 0.65–8.3 MP. On the switch proxy, keep to the
+sizes every member draws (Image classes, above) unless `imagegen models` says the member you
+want takes another.
