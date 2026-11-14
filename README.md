@@ -201,9 +201,10 @@ claude plugin update design@claude-design-plugin
 
 ## About this repository
 
-This repository is published automatically from a private one, where the plugin is developed.
-Pull requests can't be merged here, because the next publish would overwrite them. Please open an
-issue instead.
+The plugin is developed in a private repository of the same name, which holds only this plugin.
+Every push there that passes its tests publishes a snapshot of its tree here, to
+`github.com/antialias/claude-design-plugin`, as one commit. Pull requests can't be merged here,
+because the next publish would overwrite them. Please open an issue instead.
 
 ## License
 
