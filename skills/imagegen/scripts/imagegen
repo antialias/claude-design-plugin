@@ -19,9 +19,9 @@
 # Unset, it is `subscription` where a switch proxy is configured and `codex` everywhere else. That
 # choice is made from the environment before any call; a failure never moves to another backend.
 #
-# On codex the ChatGPT image tool draws with its own model (gpt-image-2-codex); --model must name a
-# gpt-image model and is otherwise not forwarded, so that is what is reported. On subscription the
-# proxy chooses the model with the provider, and names both for each image once it is drawn.
+# On codex the ChatGPT image tool draws with its own model (gpt-image-2-codex), so that is what is
+# reported. On subscription the proxy chooses the model with the provider from the image class, and
+# names both for each image once it is drawn. Neither takes a caller's --model; only api does.
 #
 # Image classes (subscription only): the proxy draws each picture from a class, a list of providers
 # it walks in order. `--class <name>` (anywhere in the arguments) or IMAGEGEN_CLASS picks one, sent
@@ -81,13 +81,20 @@ case "$class" in
 esac
 
 model="gpt-image-2" # image_gen.py's DEFAULT_MODEL
+model_given=""
+transparent=""
 dry_run=""
 prev=""
 for arg in "$@"; do
   case "$arg" in
-    --model=*) model="${arg#--model=}" ;;
+    --model) model_given=1 ;;
+    --model=*) model="${arg#--model=}" model_given=1 ;;
+    --background=transparent) transparent=1 ;;
     --dry-run) dry_run=1 ;;
-    *) [ "$prev" = "--model" ] && model="$arg" ;;
+    *)
+      [ "$prev" = "--model" ] && model="$arg"
+      [ "$prev" = "--background" ] && [ "$arg" = transparent ] && transparent=1
+      ;;
   esac
   prev="$arg"
 done
@@ -166,13 +173,16 @@ fi
 
 case "$backend" in
   codex | subscription)
-    case "$model" in
-      gpt-image*) ;;
-      *)
-        echo "imagegen: the $backend backend chooses its own image model; --model must be a gpt-image model, not '$model'" >&2
-        exit 1
-        ;;
-    esac
+    if [ -n "$model_given" ]; then
+      echo "imagegen: --model is not taken on the $backend backend, which chooses the model itself; on the switch proxy, name an image class with --class (images, images-runway, images-chatgpt)" >&2
+      exit 1
+    fi
+    # image_gen.py lets --background transparent through only with --model gpt-image-1.5. Neither
+    # backend forwards it as a model: codex draws with its own, and the proxy reads a gpt-image
+    # model as its default class, with the X-Switch-Class header winning over it anyway.
+    if [ -n "$transparent" ]; then
+      set -- "$@" --model gpt-image-1.5
+    fi
     ;;
 esac
 tool_model="gpt-image-2-codex (ChatGPT image tool)"

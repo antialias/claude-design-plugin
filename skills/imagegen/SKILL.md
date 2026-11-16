@@ -9,9 +9,12 @@ Claude Code has no built-in image tool. Every image goes through one command, wh
 OpenAI Images API and writes files to disk:
 
 ```sh
-"<base>/scripts/imagegen" generate --model gpt-image-2 --prompt-file /tmp/brief.txt \
+"<base>/scripts/imagegen" generate --prompt-file /tmp/brief.txt \
   --size 1536x1024 --quality high --out /tmp/imagegen/<project>/<name>.png
 ```
+
+Through a switch proxy, add `--class <name>` to choose the image class (below). On `codex` and
+`api`, `--class` is an error.
 
 `<base>` is the "Base directory for this skill" shown when this skill loads. The wrapper
 supplies `openai` and `pillow` through `uv` and, before calling the API, prints the backend it
@@ -36,12 +39,14 @@ Backend (`IMAGEGEN_BACKEND`). Unset, it is `subscription` where a switch proxy i
   (below).
 - `api`: OpenAI's Image API on `OPENAI_API_KEY` (billed API credits). Only when the user asks.
 
-On `codex` the ChatGPT image tool draws with its own model, gpt-image-2-codex; on `subscription`
-the proxy picks the model along with the provider. On both, `--model` must still name a gpt-image
-model but is not forwarded, and the wrapper reports what actually drew. `--background transparent`
-is honoured on `codex` and passed to whichever provider draws on `subscription`. The vendored
-script only lets it through with `--model gpt-image-1.5`, which on these backends changes nothing
-else.
+Nobody passes `--model` on `codex` or `subscription`; the wrapper refuses it. On `codex` the
+ChatGPT image tool draws with its own model, gpt-image-2-codex. On `subscription` your one choice
+is the image class; the proxy picks the provider and model from it. The wrapper reports what
+actually drew. `--background transparent` is honoured on `codex` and passed to whichever provider
+draws on `subscription`.
+
+`--model` is an `api` matter only. There the default is `gpt-image-2`, and switching models needs
+asking.
 
 ## Image classes (switch proxy)
 
@@ -73,11 +78,12 @@ draws only shapes near its own, which `imagegen models` lists.
 
 ## Rules
 
-- Pass `--model` explicitly, default `gpt-image-2`. With every image, report what drew it: on
-  `subscription` the provider/model and funding of its `imagegen: <path> drawn by …` line (no such
-  line means the proxy did not say; report that), elsewhere the model the `imagegen: model …` line
-  names. On `api`, never switch models (for example to `gpt-image-1.5` for native transparency)
-  without asking.
+- Do not pass `--model` on `codex` or `subscription`; through a switch proxy, choose a class with
+  `--class` instead. On `api`, leave the default `gpt-image-2` and never switch models (for
+  example to `gpt-image-1.5` for native transparency) without asking.
+- With every image, report what drew it: on `subscription` the provider/model and funding of its
+  `imagegen: <path> drawn by …` line (no such line means the proxy did not say; report that),
+  elsewhere the model the `imagegen: model …` line names.
 - If the backend is unavailable (no Codex login or an expired one, the plan's usage limit on
   `codex`, no switch proxy, no key for `api`) or `uv` is missing: stop and report the error line.
 - When the switch proxy refuses a picture:
@@ -127,8 +133,9 @@ Show the user: `open <png>` on macOS, and send it with SendUserFile when that to
   Generate on a flat chroma-key background, then
   `"<base>/scripts/imagegen" remove-chroma-key --input in.png --out out.png --auto-key border`.
   If that is not good enough: on `codex` or `subscription`, regenerate with
-  `--model gpt-image-1.5 --background transparent --output-format png` (`--model` is not forwarded
-  there); on `api`, ask before switching to `gpt-image-1.5`.
+  `--background transparent --output-format png`. Sizes are then 1024x1024, 1536x1024, 1024x1536
+  or auto. In a batch, put it on the command line, not in a job. On `api`, ask before switching to
+  `gpt-image-1.5`.
 
 ## Prompt shape
 
@@ -154,6 +161,7 @@ tricky words letter by letter.
 Vendored from the Codex skill. They describe Codex's built-in `image_gen` tool as the default and
 the CLI as a fallback; here the CLI is the only path, so read "built-in" guidance as "the CLI",
 and run `"<base>/scripts/imagegen"` wherever they say `python "$IMAGE_GEN"` or a `$CODEX_HOME` path.
+Their `--model` flags apply only on `api`; on `codex` and `subscription`, leave them out.
 
 - `references/prompting.md` — prompting principles.
 - `references/sample-prompts.md` — copy/paste recipes by asset type (website, game, UI, logo).

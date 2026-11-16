@@ -100,14 +100,45 @@ class Wrapper(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("imagegen: via switch proxy http://127.0.0.1:9;", r.stderr)
 
-    def test_the_chatgpt_backends_refuse_a_model_outside_gpt_image(self):
+    def test_the_chatgpt_backends_refuse_a_callers_model(self):
+        """codex and the switch proxy choose the model; a caller names a class, never a model."""
         for backend in ("codex", "subscription"):
-            r = run(
-                [WRAPPER, "generate", "--prompt", "x", "--model", "dall-e-3", "--dry-run"],
-                env=dict(without_proxy(), IMAGEGEN_BACKEND=backend),
-            )
-            self.assertEqual(r.returncode, 1, r.stderr)
-            self.assertIn("--model must be a gpt-image model, not 'dall-e-3'", r.stderr)
+            for args in (["--model", "gpt-image-2"], ["--model=gpt-image-1.5"], ["--model", "dall-e-3"], ["--model"]):
+                with self.subTest(backend=backend, args=args):
+                    r = run(
+                        [WRAPPER, "generate", "--prompt", "x", "--dry-run", *args],
+                        env=dict(without_proxy(), IMAGEGEN_BACKEND=backend),
+                    )
+                    self.assertEqual(r.returncode, 1, r.stderr)
+                    self.assertEqual(
+                        r.stderr,
+                        f"imagegen: --model is not taken on the {backend} backend, which chooses the model itself; "
+                        "on the switch proxy, name an image class with --class (images, images-runway, images-chatgpt)\n",
+                    )
+                    self.assertEqual(r.stdout, "")
+
+    @unittest.skipUnless(shutil.which("uv"), "needs uv")
+    def test_the_chatgpt_backends_pass_a_transparent_background_through(self):
+        """The vendored script lets transparency through only with gpt-image-1.5; the wrapper supplies it."""
+        for backend in ("codex", "subscription"):
+            for args in (["--background", "transparent"], ["--background=transparent"]):
+                with self.subTest(backend=backend, args=args):
+                    r = run(
+                        [WRAPPER, "generate", "--prompt", "x", "--dry-run", "--output-format", "png", *args],
+                        env=dict(without_proxy(), IMAGEGEN_BACKEND=backend),
+                    )
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    p = payload(r.stdout)
+                    self.assertEqual((p["background"], p["model"]), ("transparent", "gpt-image-1.5"))
+
+    @unittest.skipUnless(shutil.which("uv"), "needs uv")
+    def test_the_api_backend_still_needs_its_model_for_transparency(self):
+        r = run(
+            [WRAPPER, "generate", "--prompt", "x", "--dry-run", "--background", "transparent", "--output-format", "png"],
+            env=dict(without_proxy(), IMAGEGEN_BACKEND="api"),
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("transparent backgrounds are not supported in gpt-image-2", r.stderr)
 
     @unittest.skipUnless(shutil.which("uv"), "needs uv")
     def test_the_api_backend_fails_loudly_without_an_api_key(self):
@@ -353,6 +384,22 @@ class SubscriptionProxy(unittest.TestCase):
         first, second = (os.path.join(self.dir, name) for name in ("first.png", "second.png"))
         self.assertIn(f"imagegen: {first} drawn by gpt/gpt-image-2 (included)\n", r.stderr)
         self.assertIn(f"imagegen: {second} drawn by runway/gpt_image_2 (paid:runway/balance)\n", r.stderr)
+
+    def test_a_transparent_picture_reaches_the_proxy_with_its_class(self):
+        r = self.generate(
+            "--class",
+            "images-chatgpt",
+            "--background",
+            "transparent",
+            "--output-format",
+            "png",
+            "--out",
+            os.path.join(self.dir, "x.png"),
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        seen = FakeProxy.seen[0]
+        self.assertEqual(seen["class"], "images-chatgpt")
+        self.assertEqual((seen["body"]["background"], seen["body"]["model"]), ("transparent", "gpt-image-1.5"))
 
     def test_no_class_sends_no_class_header(self):
         r = self.generate("--out", os.path.join(self.dir, "x.png"))

@@ -170,15 +170,16 @@ backends, chosen by `IMAGEGEN_BACKEND`:
 | `api` | OpenAI API credits | OpenAI's Image API with `OPENAI_API_KEY`. Use it only if you want billed API usage. |
 
 A failure on one backend never moves the call to another. On `codex` the image is drawn by the
-ChatGPT image tool's own model, gpt-image-2-codex, whatever `--model` says, and the command reports
-that model. On `subscription` the proxy picks the provider for each image, falling back on its own
+ChatGPT image tool's own model, gpt-image-2-codex, and the command reports that model. On
+`subscription` the proxy picks the provider and model for each image, falling back on its own
 when the plan is spent or down, and the command reports, per image, the provider and model that
 drew it and whether the plan's allowance or paid credits covered it.
 
 On `subscription` each picture comes from an image class, a list of providers the proxy tries in
 order: `images` (the default: the ChatGPT plan, then Runway, paid from Runway credits),
 `images-runway` or `images-chatgpt`. `--class <name>` or `IMAGEGEN_CLASS` picks one, and
-`imagegen models` lists the classes, which providers can draw now and what each accepts. When the
+`imagegen models` lists the classes, which providers can draw now and what each accepts. Neither
+backend takes `--model`; the command refuses it. Only `api` does. When the
 proxy refuses a picture, its reply names every provider in the class and why; a request one change
 away from drawing gets a 400 naming that change.
 
