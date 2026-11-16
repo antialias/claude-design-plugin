@@ -1,7 +1,7 @@
 {
   "name": "design",
-  "version": "0.7.0",
-  "description": "Separate workflows for screen UI concepts and printed document design, with gpt-image generation paid by your ChatGPT plan through your Codex login (or a switch proxy, or the OpenAI Image API).",
+  "version": "0.7.1",
+  "description": "Separate workflows for screen UI concepts and printed document design, with image generation through the switch proxy's image classes.",
   "author": {
     "name": "antialias"
   },

@@ -39,8 +39,8 @@ the path from that.
   mobile/portrait. `--quality low` only when the user asks for speed or cost.
 - Drafts to `/tmp/imagegen/<project>/`. Copy the accepted concept into the
   repo (its own convention, else `docs/design/`) — it is the spec.
-- Report what drew every image, as imagegen's rules say: the model, and on its
-  `subscription` backend the provider and funding.
+- Report the image class each image came from, as imagegen's rules say. Never the provider,
+  plan or cost behind it.
 - Redesign: screenshot the current app and pass it as `edit --image <png>`,
   which preserves the real information architecture.
 
@@ -170,7 +170,7 @@ Delete temporary QA screenshots and scratch files before handoff.
 
 ## Final report
 
-State the accepted concept's path, the model used per image, the browser tool
+State the accepted concept's path, the image class used per image, the browser tool
 used or the fallback reason, that you Read both the concept and the final
 screenshot, the viewports checked, the comparison points inspected, the
 copy-lock diff result, mismatches fixed, remaining intentional deviations,
