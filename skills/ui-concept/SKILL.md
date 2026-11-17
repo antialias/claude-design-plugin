@@ -146,19 +146,16 @@ backgrounds where they layer into code UI.
 
 ## Verification
 
-1. Drive a real browser: Claude in Chrome tools via the `claude-in-chrome`
-   skill, or the chrome-devtools MCP. Playwright only when neither works —
-   say so and why.
-2. Screenshot at desktop and mobile widths, at the concept's native
+1. Screenshot at desktop and mobile widths, at the concept's native
    dimensions when practical; otherwise record the blocker.
-3. Click through the core workflow. Controls must change real local state.
-4. Read both the accepted concept PNG and the latest screenshot in the same
+2. Click through the core workflow. Controls must change real local state.
+3. Read both the accepted concept PNG and the latest screenshot in the same
    pass and compare them directly. Mandatory; browsing the page and passing
    tests do not substitute.
-5. Check at least five concrete points across copy, layout, typography,
+4. Check at least five concrete points across copy, layout, typography,
    palette and gradients, asset treatment, container model, spacing,
    responsive behavior, and motion. Diff visible copy against the copy lock.
-6. Per mismatch, record what differs, concept evidence, render evidence, and
+5. Per mismatch, record what differs, concept evidence, render evidence, and
    the fix or the reason not fixed. Keep fixing until nothing fixable remains.
 
 Hard stops: clipped content, accidental wrapping, placeholder boxes,
