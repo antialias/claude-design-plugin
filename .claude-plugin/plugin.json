@@ -1,6 +1,6 @@
 {
   "name": "design",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Separate workflows for screen UI concepts and printed document design, with image generation through the switch proxy's image classes.",
   "author": {
     "name": "antialias"
