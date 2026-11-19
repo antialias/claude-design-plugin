@@ -298,6 +298,20 @@ class SubscriptionBackend(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stderr)
             self.assertIn(said, r.stderr)
 
+    @unittest.skipIf(os.path.exists("/opt/claude-switch/proxy-auth-helper"), "a cloud session's helper comes first")
+    def test_finds_the_apiary_helper_in_home(self):
+        home = tempfile.mkdtemp()
+        env = dict(without_proxy(), HOME=home, IMAGEGEN_PROXY_URL="http://127.0.0.1:9")
+        env.pop("IMAGEGEN_PROXY_AUTH_HELPER", None)
+        r = run([WRAPPER, "generate", "--prompt", "x"], env=env)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("~/.apiary/proxy-auth-helper); set IMAGEGEN_PROXY_AUTH_HELPER", r.stderr)
+        os.makedirs(os.path.join(home, ".apiary"))
+        shutil.copy(helper_script("x", code=3), os.path.join(home, ".apiary", "proxy-auth-helper"))
+        r = run([WRAPPER, "generate", "--prompt", "x"], env=env)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"imagegen: {home}/.apiary/proxy-auth-helper failed", r.stderr)
+
 
 @unittest.skipUnless(shutil.which("uv"), "needs uv")
 class SubscriptionProxy(unittest.TestCase):

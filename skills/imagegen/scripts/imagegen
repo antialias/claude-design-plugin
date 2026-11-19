@@ -11,8 +11,8 @@
 #   subscription            a claude-switch proxy's Images API routes, which pick the provider
 #                           for each image (the ChatGPT plan's image tool, or another provider
 #                           when that plan is spent or down): base URL from
-#                           CLAUDE_SWITCH_PARENT_HTTPS_PROXY (set for every command a
-#                           claude-switch session runs) or IMAGEGEN_PROXY_URL, credential from
+#                           CLAUDE_SWITCH_PARENT_HTTPS_PROXY (set for every command an
+#                           apiary or cloud session runs) or IMAGEGEN_PROXY_URL, credential from
 #                           that machine's proxyAuthHelper. served_by.py runs the script and
 #                           reports the provider, model and funding the proxy names per image.
 #   api                     OpenAI's Image API on OPENAI_API_KEY (billed API credits).
@@ -126,7 +126,7 @@ fi
 read_proxy_login() {
   local helper="${IMAGEGEN_PROXY_AUTH_HELPER:-}" candidate login
   if [ -z "$helper" ]; then
-    for candidate in /opt/claude-switch/proxy-auth-helper "$HOME/.claude-switch-proxy/proxy-auth-helper"; do
+    for candidate in /opt/claude-switch/proxy-auth-helper "$HOME/.apiary/proxy-auth-helper"; do
       if [ -x "$candidate" ]; then
         helper="$candidate"
         break
@@ -134,7 +134,7 @@ read_proxy_login() {
     done
   fi
   if [ -z "$helper" ]; then
-    echo "imagegen: no proxyAuthHelper found (/opt/claude-switch/proxy-auth-helper, ~/.claude-switch-proxy/proxy-auth-helper); set IMAGEGEN_PROXY_AUTH_HELPER" >&2
+    echo "imagegen: no proxyAuthHelper found (/opt/claude-switch/proxy-auth-helper, ~/.apiary/proxy-auth-helper); set IMAGEGEN_PROXY_AUTH_HELPER" >&2
     exit 1
   fi
   if ! login="$("$helper")"; then
@@ -152,7 +152,7 @@ read_proxy_login() {
   proxy_login="${login#Basic }"
 }
 
-no_proxy_here="no switch proxy here (CLAUDE_SWITCH_PARENT_HTTPS_PROXY is unset: this is not a claude-switch session); set IMAGEGEN_PROXY_URL, or choose IMAGEGEN_BACKEND=codex or api"
+no_proxy_here="no switch proxy here (CLAUDE_SWITCH_PARENT_HTTPS_PROXY is unset: this is not an apiary or cloud session); set IMAGEGEN_PROXY_URL, or choose IMAGEGEN_BACKEND=codex or api"
 
 if [ "${1:-}" = "models" ]; then
   shift

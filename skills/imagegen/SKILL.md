@@ -31,7 +31,9 @@ Backend (`IMAGEGEN_BACKEND`). Unset, it is `subscription` where a switch proxy i
   what to do. The backend is not a documented OpenAI API and can change without notice.
 - `subscription`: the switch proxy's image endpoint. You name an image class (below) and the
   proxy decides who draws it. The proxy address is `CLAUDE_SWITCH_PARENT_HTTPS_PROXY` (or
-  `IMAGEGEN_PROXY_URL`) and the login comes from the machine's `proxyAuthHelper`.
+  `IMAGEGEN_PROXY_URL`) and the login comes from the machine's `proxyAuthHelper`:
+  `/opt/claude-switch/proxy-auth-helper` in a cloud session, `~/.apiary/proxy-auth-helper` on a
+  machine set up with `apiary`, or `IMAGEGEN_PROXY_AUTH_HELPER`.
 - `api`: OpenAI's Image API on `OPENAI_API_KEY` (billed API credits). Only when the user asks.
 
 Nobody passes `--model` on `codex` or `subscription`; the wrapper refuses it. On `subscription`
